@@ -348,7 +348,7 @@ The message is sent differently based on connection type:
       ('stdio
        (process-send-string
         (jsonrpc--process connection)
-        (format "%s\r\n" json))))
+        (format "%s\n" json))))
     (jsonrpc--event
      connection
      'client
