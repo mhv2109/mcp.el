@@ -5,6 +5,7 @@ on:
     branches:
       - master
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,9 +42,12 @@ jobs:
         with:
           version: ${{ matrix.emacs-version }}
 
-      - name: test-mcp
+      - name: compile-mcp
         shell: bash
         run: emacs -Q --batch --eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile mcp.el
-      - name: test-mcp-hub
+      - name: compile-mcp-hub
         shell: bash
         run: emacs -Q --batch --eval "(progn (setq byte-compile-error-on-warn t) (add-to-list 'load-path \"./\"))" -f batch-byte-compile mcp-hub.el
+      - name: test
+        shell: bash
+        run: emacs -Q --batch -L . _-L test -l test/run-tests.el
