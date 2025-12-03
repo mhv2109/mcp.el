@@ -373,160 +373,161 @@ The message is sent differently based on connection type:
     ;; (bug#60088)
     (run-at-time 0 nil #'mcp--process-filter proc string)
     (cl-return-from mcp--process-filter))
-  (when (buffer-live-p (process-buffer proc))
-    (with-current-buffer (process-buffer proc)
-      (let* ((conn (process-get proc 'jsonrpc-connection))
-             (type (mcp--connection-type conn))
-             (queue (or (process-get proc 'jsonrpc-mqueue) nil))
-             (buf (or (process-get proc 'jsonrpc-pending)
-                      (plist-get (process-put
-                                  proc 'jsonrpc-pending
-                                  (generate-new-buffer
-                                   (format " *mcp-%s-jsonrpc-pending*" (jsonrpc-name conn))
-                                   'inhibit-hooks))
-                                 'jsonrpc-pending)))
-             (message-rest-size (or (process-get proc 'jsonrpc-message-rest-size)
-                                    0))
-             (data (if (equal type 'stdio)
-                       (with-current-buffer buf
-                         (goto-char (point-max))
-                         (insert string)
-                         (buffer-string))
-                     string))
-             (parsed-messages nil)
-             (separator (if (equal type 'stdio)
-                            "\n"
-                          (if (mcp--sse conn)
-                              "\r\n\r\n"
-                            "\n\n")))
-             (data-blocks (split-string data separator)))
-        (dolist (data-block data-blocks)
-          (let ((data-block (string-trim data-block)))
-            (unless (string-empty-p data-block)
-              (pcase type
-                ('http
-                 (if (string-prefix-p "HTTP" data-block)
-                     (if-let* ((headers (mcp--parse-http-header data-block))
-                               (response-code (plist-get headers :response-code))
-                               (content-type (plist-get headers :content-type))
-                               (content-type (or (car (split-string content-type ";" t)) "")))
-                         (when (or (not (string= response-code "200"))
-                                   (not (string-match "text/event-stream" content-type)))
-                           ;; sse not connect success
-                           (message "sse not connect, return code: %s" response-code))
-                       ;; can't parse headers
-                       (message "can't parse headers: %s" data-block))
-                   (if (= 0 message-rest-size)
-                       (let* ((data-line (split-string data-block "\n"))
-                              (data-size-line (cl-first data-line))
-                              (event-line (cl-second data-line))
-                              (id-line (when-let* ((id-line (cl-third data-line)))
-                                         (if (string-prefix-p "id" id-line)
-                                             id-line)))
-                              (data-body (if id-line
-                                             (cl-fourth data-line)
-                                           (cl-third data-line)))
-                              (data (when data-body
-                                      (string-trim (substring data-body 6)))))
-                         (when-let* ((event-line event-line)
-                                     (data-size (string-to-number (string-trim data-size-line)
-                                                                  16))
-                                     (event-type (if (string-prefix-p ": ping" event-line)
-                                                     'ping
-                                                   (intern (string-trim (substring event-line 6)))))
-                                     (body-size (let ((len 0))
-                                                  (dolist (i (cdr data-line)) (setq len (+ len (length i))))
-                                                  (+ len (length (cdr data-line)) -1)))
-                                     (rest-size (- data-size
-                                                   2 ; \r\n after data-size
-                                                   ;; only sse need add 2
-                                                   (if (mcp--sse conn)
-                                                       2 ; \r\n after the last data-line
-                                                     0)
-                                                   body-size)))
-                           (pcase event-type
-                             ('endpoint
-                              (let* ((endpoint (if (string-match "http://[^/]+\\(/[^[:space:]]+\\)" data)
-                                                   (match-string 1 data)
-                                                 data)))
-                                (unless (mcp--endpoint conn)
-                                  (setf (mcp--endpoint conn) endpoint)
-                                  (mcp--send-initial-message conn))))
-                             ('message
-                              (if (>= 0 rest-size)
-                                  (push data
-                                        parsed-messages)
-                                (process-put proc 'jsonrpc-message-rest-size rest-size)
-                                (with-current-buffer buf
-                                  (goto-char (point-max))
-                                  (insert data))))
-                             (_))))
-                     (let* ((data-block-size (length data-block))
-                            (new-message-rest-size (- message-rest-size data-block-size)))
-                       (process-put proc 'jsonrpc-message-rest-size new-message-rest-size)
-                       (with-current-buffer buf
-                         (goto-char (point-max))
-                         (insert (string-trim data-block))
-                         (when (= 0 new-message-rest-size)
-                           (push (buffer-string)
-                                 parsed-messages)
-                           (erase-buffer)))))))
-                ('stdio
-                 (push data-block parsed-messages))))))
+  (let ((mcp--in-process-filter t))
+    (when (buffer-live-p (process-buffer proc))
+      (with-current-buffer (process-buffer proc)
+        (let* ((conn (process-get proc 'jsonrpc-connection))
+               (type (mcp--connection-type conn))
+               (queue (or (process-get proc 'jsonrpc-mqueue) nil))
+               (buf (or (process-get proc 'jsonrpc-pending)
+                        (plist-get (process-put
+                                    proc 'jsonrpc-pending
+                                    (generate-new-buffer
+                                     (format " *mcp-%s-jsonrpc-pending*" (jsonrpc-name conn))
+                                     'inhibit-hooks))
+                                   'jsonrpc-pending)))
+               (message-rest-size (or (process-get proc 'jsonrpc-message-rest-size)
+                                      0))
+               (data (if (equal type 'stdio)
+                         (with-current-buffer buf
+                           (goto-char (point-max))
+                           (insert string)
+                           (buffer-string))
+                       string))
+               (parsed-messages nil)
+               (separator (if (equal type 'stdio)
+                              "\n"
+                            (if (mcp--sse conn)
+                                "\r\n\r\n"
+                              "\n\n")))
+               (data-blocks (split-string data separator)))
+          (dolist (data-block data-blocks)
+            (let ((data-block (string-trim data-block)))
+              (unless (string-empty-p data-block)
+                (pcase type
+                  ('http
+                   (if (string-prefix-p "HTTP" data-block)
+                       (if-let* ((headers (mcp--parse-http-header data-block))
+                                 (response-code (plist-get headers :response-code))
+                                 (content-type (plist-get headers :content-type))
+                                 (content-type (or (car (split-string content-type ";" t)) "")))
+                           (when (or (not (string= response-code "200"))
+                                     (not (string-match "text/event-stream" content-type)))
+                             ;; sse not connect success
+                             (message "sse not connect, return code: %s" response-code))
+                         ;; can't parse headers
+                         (message "can't parse headers: %s" data-block))
+                     (if (= 0 message-rest-size)
+                         (let* ((data-line (split-string data-block "\n"))
+                                (data-size-line (cl-first data-line))
+                                (event-line (cl-second data-line))
+                                (id-line (when-let* ((id-line (cl-third data-line)))
+                                           (if (string-prefix-p "id" id-line)
+                                               id-line)))
+                                (data-body (if id-line
+                                               (cl-fourth data-line)
+                                             (cl-third data-line)))
+                                (data (when data-body
+                                        (string-trim (substring data-body 6)))))
+                           (when-let* ((event-line event-line)
+                                       (data-size (string-to-number (string-trim data-size-line)
+                                                                    16))
+                                       (event-type (if (string-prefix-p ": ping" event-line)
+                                                       'ping
+                                                     (intern (string-trim (substring event-line 6)))))
+                                       (body-size (let ((len 0))
+                                                    (dolist (i (cdr data-line)) (setq len (+ len (length i))))
+                                                    (+ len (length (cdr data-line)) -1)))
+                                       (rest-size (- data-size
+                                                     2 ; \r\n after data-size
+                                                     ;; only sse need add 2
+                                                     (if (mcp--sse conn)
+                                                         2 ; \r\n after the last data-line
+                                                       0)
+                                                     body-size)))
+                             (pcase event-type
+                               ('endpoint
+                                (let* ((endpoint (if (string-match "http://[^/]+\\(/[^[:space:]]+\\)" data)
+                                                     (match-string 1 data)
+                                                   data)))
+                                  (unless (mcp--endpoint conn)
+                                    (setf (mcp--endpoint conn) endpoint)
+                                    (mcp--send-initial-message conn))))
+                               ('message
+                                (if (>= 0 rest-size)
+                                    (push data
+                                          parsed-messages)
+                                  (process-put proc 'jsonrpc-message-rest-size rest-size)
+                                  (with-current-buffer buf
+                                    (goto-char (point-max))
+                                    (insert data))))
+                               (_))))
+                       (let* ((data-block-size (length data-block))
+                              (new-message-rest-size (- message-rest-size data-block-size)))
+                         (process-put proc 'jsonrpc-message-rest-size new-message-rest-size)
+                         (with-current-buffer buf
+                           (goto-char (point-max))
+                           (insert (string-trim data-block))
+                           (when (= 0 new-message-rest-size)
+                             (push (buffer-string)
+                                   parsed-messages)
+                             (erase-buffer)))))))
+                  ('stdio
+                   (push data-block parsed-messages))))))
 
-        (setq parsed-messages (nreverse parsed-messages))
+          (setq parsed-messages (nreverse parsed-messages))
 
-        (when (equal type 'stdio)
-          (with-current-buffer buf (erase-buffer)))
-        ;; Add messages to MQUEUE
-        (dolist (msg parsed-messages)
-          (let ((json nil)
-                (json-str (with-current-buffer buf
-                            (if (= (point-min) (point-max))
-                                msg
-                              (goto-char (point-max))
-                              (insert msg)
-                              (buffer-string)))))
-            (condition-case-unless-debug err
-                (when (stringp json-str)
-                  (setq json
-                        (json-parse-string (decode-coding-string json-str 'utf-8)
-                                           :object-type 'plist
-                                           :null-object nil
-                                           :false-object :json-false)))
-              (json-parse-error
-               ;; parse error and not because of incomplete json
-               (jsonrpc--warn "Invalid JSON: %s\t %s" (cdr err) json-str))
-              (json-end-of-file
-               ;; Save remaining data to pending for next processing
-               (with-current-buffer buf
-                 (goto-char (point-max))
-                 (insert json-str)
-                 (process-put proc 'jsonrpc-pending buf))))
-            (when json
-              (when (equal type 'stdio)
-                (with-current-buffer buf (erase-buffer)))
-              (when (listp json)
-                (setq json (plist-put json :jsonrpc-json json-str))
-                (push json queue)))))
+          (when (equal type 'stdio)
+            (with-current-buffer buf (erase-buffer)))
+          ;; Add messages to MQUEUE
+          (dolist (msg parsed-messages)
+            (let ((json nil)
+                  (json-str (with-current-buffer buf
+                              (if (= (point-min) (point-max))
+                                  msg
+                                (goto-char (point-max))
+                                (insert msg)
+                                (buffer-string)))))
+              (condition-case-unless-debug err
+                  (when (stringp json-str)
+                    (setq json
+                          (json-parse-string (decode-coding-string json-str 'utf-8)
+                                             :object-type 'plist
+                                             :null-object nil
+                                             :false-object :json-false)))
+                (json-parse-error
+                 ;; parse error and not because of incomplete json
+                 (jsonrpc--warn "Invalid JSON: %s\t %s" (cdr err) json-str))
+                (json-end-of-file
+                 ;; Save remaining data to pending for next processing
+                 (with-current-buffer buf
+                   (goto-char (point-max))
+                   (insert json-str)
+                   (process-put proc 'jsonrpc-pending buf))))
+              (when json
+                (when (equal type 'stdio)
+                  (with-current-buffer buf (erase-buffer)))
+                (when (listp json)
+                  (setq json (plist-put json :jsonrpc-json json-str))
+                  (push json queue)))))
 
-        ;; Save updated queue
-        (process-put proc 'jsonrpc-mqueue queue)
+          ;; Save updated queue
+          (process-put proc 'jsonrpc-mqueue queue)
 
-        ;; Dispatch messages in timer
-        (cl-loop with time = (current-time)
-                 for msg = (pop queue) while msg
-                 do (let ((timer (timer-create)))
-                      (timer-set-time timer time)
-                      (timer-set-function timer
-                                          (lambda (conn msg)
-                                            (with-temp-buffer
-                                              (jsonrpc-connection-receive conn msg)))
-                                          (list conn msg))
-                      (timer-activate timer)))
+          ;; Dispatch messages in timer
+          (cl-loop with time = (current-time)
+                   for msg = (pop queue) while msg
+                   do (let ((timer (timer-create)))
+                        (timer-set-time timer time)
+                        (timer-set-function timer
+                                            (lambda (conn msg)
+                                              (with-temp-buffer
+                                                (jsonrpc-connection-receive conn msg)))
+                                            (list conn msg))
+                        (timer-activate timer)))
 
-        ;; Save final queue (might have been consumed by timer pop)
-        (process-put proc 'jsonrpc-mqueue queue)))))
+          ;; Save final queue (might have been consumed by timer pop)
+          (process-put proc 'jsonrpc-mqueue queue))))))
 
 (cl-defmethod mcp--connect-sse ((conn mcp-http-process-connection))
   "Establish SSE (Server-Sent Events) connection for HTTP CONN."
